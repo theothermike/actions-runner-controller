@@ -116,6 +116,7 @@ func New(config Config) (*Listener, error) {
 //go:generate mockery --name Handler --output ./mocks --outpkg mocks --case underscore
 type Handler interface {
 	HandleJobStarted(ctx context.Context, jobInfo *actions.JobStarted) error
+	HandleJobAssigned(ctx context.Context, jobInfo *actions.JobAssigned) error
 	HandleDesiredRunnerCount(ctx context.Context, count, jobsCompleted int) (int, error)
 }
 
@@ -212,6 +213,12 @@ func (l *Listener) handleMessage(ctx context.Context, handler Handler, msg *acti
 			return fmt.Errorf("failed to handle job started: %w", err)
 		}
 		l.metrics.PublishJobStarted(jobStarted)
+	}
+
+	for _, jobAssigned := range parsedMsg.jobsAssigned {
+		if err := handler.HandleJobAssigned(ctx, jobAssigned); err != nil {
+			return fmt.Errorf("failed to handle job assigned: %w", err)
+		}
 	}
 
 	desiredRunners, err := handler.HandleDesiredRunnerCount(ctx, parsedMsg.statistics.TotalAssignedJobs, len(parsedMsg.jobsCompleted))
@@ -320,6 +327,7 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 type parsedMessage struct {
 	statistics    *actions.RunnerScaleSetStatistic
 	jobsStarted   []*actions.JobStarted
+	jobsAssigned  []*actions.JobAssigned
 	jobsAvailable []*actions.JobAvailable
 	jobsCompleted []*actions.JobCompleted
 }
@@ -370,7 +378,11 @@ func (l *Listener) parseMessage(ctx context.Context, msg *actions.RunnerScaleSet
 				return nil, fmt.Errorf("failed to decode job assigned: %w", err)
 			}
 
-			l.logger.Info("Job assigned message received", "jobId", jobAssigned.JobID)
+			l.logger.Info("Job assigned message received",
+				"jobId", jobAssigned.JobID,
+				"workflowRunId", jobAssigned.WorkflowRunID,
+				"runnerRequestId", jobAssigned.RunnerRequestID)
+			parsedMsg.jobsAssigned = append(parsedMsg.jobsAssigned, &jobAssigned)
 
 		case messageTypeJobStarted:
 			var jobStarted actions.JobStarted

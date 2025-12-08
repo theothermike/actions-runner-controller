@@ -34,6 +34,7 @@ type Listener interface {
 //go:generate mockery --name Worker --output ./mocks --outpkg mocks --case underscore
 type Worker interface {
 	HandleJobStarted(ctx context.Context, jobInfo *actions.JobStarted) error
+	HandleJobAssigned(ctx context.Context, jobInfo *actions.JobAssigned) error
 	HandleDesiredRunnerCount(ctx context.Context, count int, jobsCompleted int) (int, error)
 }
 

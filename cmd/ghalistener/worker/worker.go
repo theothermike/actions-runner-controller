@@ -12,6 +12,7 @@ import (
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/go-logr/logr"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -38,20 +39,22 @@ type Config struct {
 // The Worker's role is to process the messages it receives from the listener.
 // It then initiates Kubernetes API requests to carry out the necessary actions.
 type Worker struct {
-	clientset *kubernetes.Clientset
-	config    Config
-	lastPatch int
-	patchSeq  int
-	logger    *logr.Logger
+	clientset          *kubernetes.Clientset
+	config             Config
+	lastPatch          int
+	patchSeq           int
+	pendingAssignments map[int64]*actions.JobAssigned
+	logger             *logr.Logger
 }
 
 var _ listener.Handler = (*Worker)(nil)
 
 func New(config Config, options ...Option) (*Worker, error) {
 	w := &Worker{
-		config:    config,
-		lastPatch: -1,
-		patchSeq:  -1,
+		config:             config,
+		lastPatch:          -1,
+		patchSeq:           -1,
+		pendingAssignments: make(map[int64]*actions.JobAssigned),
 	}
 
 	conf, err := rest.InClusterConfig()
@@ -106,6 +109,12 @@ func (w *Worker) HandleJobStarted(ctx context.Context, jobInfo *actions.JobStart
 		"jobDisplayName", jobInfo.JobDisplayName,
 		"requestId", jobInfo.RunnerRequestID)
 
+	// Clean up pending assignment for this request (if exists)
+	if _, exists := w.pendingAssignments[jobInfo.RunnerRequestID]; exists {
+		delete(w.pendingAssignments, jobInfo.RunnerRequestID)
+		w.logger.Info("Removed pending assignment for started job", "runnerRequestId", jobInfo.RunnerRequestID)
+	}
+
 	original, err := json.Marshal(&v1alpha1.EphemeralRunner{})
 	if err != nil {
 		return fmt.Errorf("failed to marshal empty ephemeral runner: %w", err)
@@ -158,6 +167,20 @@ func (w *Worker) HandleJobStarted(ctx context.Context, jobInfo *actions.JobStart
 	return nil
 }
 
+// HandleJobAssigned stores job assignment information for later use when creating runners.
+// This allows us to propagate WorkflowRunID to the runner pod before creation.
+func (w *Worker) HandleJobAssigned(ctx context.Context, jobInfo *actions.JobAssigned) error {
+	w.logger.Info("Storing job assignment info",
+		"runnerRequestId", jobInfo.RunnerRequestID,
+		"workflowRunId", jobInfo.WorkflowRunID,
+		"jobId", jobInfo.JobID,
+		"ownerName", jobInfo.OwnerName,
+		"repoName", jobInfo.RepositoryName)
+
+	w.pendingAssignments[jobInfo.RunnerRequestID] = jobInfo
+	return nil
+}
+
 // HandleDesiredRunnerCount handles the desired runner count by scaling the ephemeral runner set.
 // The function calculates the target runner count based on the minimum and maximum runner count configuration.
 // If the target runner count is the same as the last patched count, it skips patching and returns nil.
@@ -167,6 +190,18 @@ func (w *Worker) HandleJobStarted(ctx context.Context, jobInfo *actions.JobStart
 // If any error occurs during the process, it returns an error with a descriptive message.
 func (w *Worker) HandleDesiredRunnerCount(ctx context.Context, count, jobsCompleted int) (int, error) {
 	patchID := w.setDesiredWorkerState(count, jobsCompleted)
+
+	// Serialize pending assignments as JSON
+	var assignmentsJSON string
+	if len(w.pendingAssignments) > 0 {
+		assignmentsBytes, err := json.Marshal(w.pendingAssignments)
+		if err != nil {
+			w.logger.Error(err, "failed to marshal pending assignments, continuing without them")
+		} else {
+			assignmentsJSON = string(assignmentsBytes)
+			w.logger.Info("Including pending assignments in patch", "count", len(w.pendingAssignments))
+		}
+	}
 
 	original, err := json.Marshal(
 		&v1alpha1.EphemeralRunnerSet{
@@ -180,8 +215,16 @@ func (w *Worker) HandleDesiredRunnerCount(ctx context.Context, count, jobsComple
 		return 0, fmt.Errorf("failed to marshal empty ephemeral runner set: %w", err)
 	}
 
+	annotations := make(map[string]string)
+	if assignmentsJSON != "" {
+		annotations["actions.github.com/pending-assignments"] = assignmentsJSON
+	}
+
 	patch, err := json.Marshal(
 		&v1alpha1.EphemeralRunnerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: annotations,
+			},
 			Spec: v1alpha1.EphemeralRunnerSetSpec{
 				Replicas: w.lastPatch,
 				PatchID:  patchID,
@@ -213,6 +256,12 @@ func (w *Worker) HandleDesiredRunnerCount(ctx context.Context, count, jobsComple
 		Into(patchedEphemeralRunnerSet)
 	if err != nil {
 		return 0, fmt.Errorf("could not patch ephemeral runner set , patch JSON: %s, error: %w", string(mergePatch), err)
+	}
+
+	// Clear pending assignments after successful patch
+	if len(w.pendingAssignments) > 0 {
+		w.logger.Info("Clearing pending assignments after successful patch", "count", len(w.pendingAssignments))
+		w.pendingAssignments = make(map[int64]*actions.JobAssigned)
 	}
 
 	w.logger.Info("Ephemeral runner set scaled.",

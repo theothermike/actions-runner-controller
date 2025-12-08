@@ -39,6 +39,20 @@ func (_m *Worker) HandleDesiredRunnerCount(ctx context.Context, count int, acqui
 	return r0, r1
 }
 
+// HandleJobAssigned provides a mock function with given fields: ctx, jobInfo
+func (_m *Worker) HandleJobAssigned(ctx context.Context, jobInfo *actions.JobAssigned) error {
+	ret := _m.Called(ctx, jobInfo)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *actions.JobAssigned) error); ok {
+		r0 = rf(ctx, jobInfo)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // HandleJobStarted provides a mock function with given fields: ctx, jobInfo
 func (_m *Worker) HandleJobStarted(ctx context.Context, jobInfo *actions.JobStarted) error {
 	ret := _m.Called(ctx, jobInfo)

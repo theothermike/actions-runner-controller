@@ -18,6 +18,7 @@ package actionsgithubcom
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -357,10 +358,40 @@ func (r *EphemeralRunnerSetReconciler) cleanUpEphemeralRunners(ctx context.Conte
 
 // createEphemeralRunners provisions `count` number of v1alpha1.EphemeralRunner resources in the cluster.
 func (r *EphemeralRunnerSetReconciler) createEphemeralRunners(ctx context.Context, runnerSet *v1alpha1.EphemeralRunnerSet, count int, log logr.Logger) error {
+	// Parse pending assignments from annotation
+	pendingAssignments := make(map[int64]*actions.JobAssigned)
+	if assignmentsJSON, ok := runnerSet.Annotations["actions.github.com/pending-assignments"]; ok {
+		if err := json.Unmarshal([]byte(assignmentsJSON), &pendingAssignments); err != nil {
+			log.Error(err, "Failed to unmarshal pending assignments, continuing without them")
+		} else if len(pendingAssignments) > 0 {
+			log.Info("Found pending job assignments", "count", len(pendingAssignments))
+		}
+	}
+
 	// Track multiple errors at once and return the bundle.
 	errs := make([]error, 0)
 	for i := 0; i < count; i++ {
 		ephemeralRunner := r.newEphemeralRunner(runnerSet)
+
+		// Try to match with pending assignment (best-effort)
+		// Note: This is best-effort matching - we may not always have 1:1 correspondence
+		if len(pendingAssignments) > 0 {
+			// Take first available assignment
+			for reqID, assignment := range pendingAssignments {
+				if ephemeralRunner.Annotations == nil {
+					ephemeralRunner.Annotations = make(map[string]string)
+				}
+				ephemeralRunner.Annotations[AnnotationKeyWorkflowRunID] = strconv.FormatInt(assignment.WorkflowRunID, 10)
+				ephemeralRunner.Annotations[AnnotationKeyRunnerRequestID] = strconv.FormatInt(assignment.RunnerRequestID, 10)
+				log.Info("Annotating ephemeral runner with workflow run ID",
+					"runner", ephemeralRunner.Name,
+					"workflowRunId", assignment.WorkflowRunID,
+					"runnerRequestId", assignment.RunnerRequestID)
+				delete(pendingAssignments, reqID)
+				break
+			}
+		}
+
 		if runnerSet.Spec.EphemeralRunnerSpec.Proxy != nil {
 			ephemeralRunner.Spec.ProxySecretRef = proxyEphemeralRunnerSetSecretName(runnerSet)
 		}

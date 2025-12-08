@@ -12,6 +12,7 @@ const (
 const (
 	EnvVarRunnerJITConfig      = "ACTIONS_RUNNER_INPUT_JITCONFIG"
 	EnvVarRunnerExtraUserAgent = "GITHUB_ACTIONS_RUNNER_EXTRA_USER_AGENT"
+	EnvVarWorkflowRunID        = "WORKFLOW_RUN_ID"
 )
 
 // Environment variable names used to set proxy variables for containers
@@ -34,6 +35,7 @@ const (
 	LabelKeyGitHubEnterprise        = "actions.github.com/enterprise"
 	LabelKeyGitHubOrganization      = "actions.github.com/organization"
 	LabelKeyGitHubRepository        = "actions.github.com/repository"
+	LabelKeyWorkflowRunID           = "actions.github.com/workflow-run-id"
 )
 
 // AutoscalingRunnerSetCleanupFinalizerName is a finalizer used to protect resources
@@ -44,6 +46,8 @@ const (
 	AnnotationKeyGitHubRunnerGroupName    = "actions.github.com/runner-group-name"
 	AnnotationKeyGitHubRunnerScaleSetName = "actions.github.com/runner-scale-set-name"
 	AnnotationKeyPatchID                  = "actions.github.com/patch-id"
+	AnnotationKeyWorkflowRunID            = "actions.github.com/workflow-run-id"
+	AnnotationKeyRunnerRequestID          = "actions.github.com/runner-request-id"
 )
 
 // Labels applied to listener roles

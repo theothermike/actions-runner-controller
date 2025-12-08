@@ -598,6 +598,15 @@ func (b *ResourceBuilder) newEphemeralRunnerPod(runner *v1alpha1.EphemeralRunner
 	maps.Copy(labels, runner.Labels)
 	maps.Copy(labels, runner.Spec.Labels)
 	labels["actions-ephemeral-runner"] = string(corev1.ConditionTrue)
+
+	// Extract WorkflowRunID from runner annotations
+	var workflowRunID string
+	if id, ok := runner.Annotations[AnnotationKeyWorkflowRunID]; ok {
+		workflowRunID = id
+		// Add workflow run ID label for pod affinity matching
+		labels[LabelKeyWorkflowRunID] = workflowRunID
+	}
+
 	labels[LabelKeyPodTemplateHash] = hash.FNVHashStringObjects(
 		FilterLabels(labels, LabelKeyRunnerTemplateHash),
 		annotations,
@@ -626,6 +635,46 @@ func (b *ResourceBuilder) newEphemeralRunnerPod(runner *v1alpha1.EphemeralRunner
 	newPod.Spec = runner.Spec.Spec
 	newPod.Spec.Containers = make([]corev1.Container, 0, len(runner.Spec.Spec.Containers))
 
+	// Add toleration and pod affinity if workflow run ID is available
+	if workflowRunID != "" {
+		// Add toleration for workflow-specific node targeting
+		toleration := corev1.Toleration{
+			Key:      fmt.Sprintf("github.com/run-id-%s", workflowRunID),
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoSchedule,
+		}
+
+		if newPod.Spec.Tolerations == nil {
+			newPod.Spec.Tolerations = []corev1.Toleration{}
+		}
+		newPod.Spec.Tolerations = append(newPod.Spec.Tolerations, toleration)
+
+		// Add pod affinity to prefer co-location with other runners from same workflow
+		if newPod.Spec.Affinity == nil {
+			newPod.Spec.Affinity = &corev1.Affinity{}
+		}
+		if newPod.Spec.Affinity.PodAffinity == nil {
+			newPod.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
+		}
+
+		podAffinityTerm := corev1.WeightedPodAffinityTerm{
+			Weight: 100,
+			PodAffinityTerm: corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						LabelKeyWorkflowRunID: workflowRunID,
+					},
+				},
+				TopologyKey: "kubernetes.io/hostname",
+			},
+		}
+
+		newPod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+			newPod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+			podAffinityTerm,
+		)
+	}
+
 	for _, c := range runner.Spec.Spec.Containers {
 		if c.Name == v1alpha1.EphemeralRunnerContainerName {
 			c.Env = append(
@@ -646,6 +695,15 @@ func (b *ResourceBuilder) newEphemeralRunnerPod(runner *v1alpha1.EphemeralRunner
 					Value: fmt.Sprintf("actions-runner-controller/%s", build.Version),
 				},
 			)
+
+			// Add WORKFLOW_RUN_ID environment variable if available
+			if workflowRunID != "" {
+				c.Env = append(c.Env, corev1.EnvVar{
+					Name:  EnvVarWorkflowRunID,
+					Value: workflowRunID,
+				})
+			}
+
 			c.Env = append(c.Env, envs...)
 		}
 
