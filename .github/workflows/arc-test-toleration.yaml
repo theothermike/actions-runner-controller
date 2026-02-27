@@ -1,0 +1,15 @@
+name: ARC Toleration Test
+on:
+  workflow_dispatch:
+    inputs:
+      arc_name:
+        description: 'Name of the ARC runner scale set'
+        required: true
+jobs:
+  sleep-job:
+    runs-on: ${{ inputs.arc_name }}
+    steps:
+      - name: Sleep to allow pod inspection
+        run: |
+          echo "Workflow Run ID: $GITHUB_RUN_ID"
+          sleep 120
